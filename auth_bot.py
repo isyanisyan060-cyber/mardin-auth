@@ -8,7 +8,7 @@ import os
 import sys
 
 # --- AYARLAR ---
-BOT_TOKEN = "MTU2NTQyNDg2OTY5OTc0NzkwMg.GMZ_Zk.yzAH4FHzooqfQhafaTtqohBMCd7GyzAvqM5_v0"
+BOT_TOKEN = os.environ.get("DISCORD_TOKEN", "")
 API_HOST = "0.0.0.0"
 API_PORT = int(os.environ.get("PORT", 47820))
 
