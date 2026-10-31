@@ -2,6 +2,7 @@ import sqlite3
 import discord
 from discord import app_commands
 from discord.ext import commands
+import aiohttp
 from aiohttp import web
 import asyncio
 import os
@@ -78,7 +79,7 @@ async def on_ready():
     except Exception as e:
         print(f"[-] Slash sync hatasi: {e}")
     try:
-        await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="Mardin 7/24 Auth"))
+        await bot.change_presence(status=discord.Status.online, activity=discord.Activity(type=discord.ActivityType.watching, name="Mardin 7/24 Auth"))
     except Exception as e:
         pass
 
@@ -387,11 +388,33 @@ async def handle_verify(request):
             "message": "Farkli makine tespit edildi! Baska bir bilgisayara kilitli."
         }, status=403)
 
+async def handle_root(request):
+    return web.json_response({
+        "status": "online",
+        "service": "Mardin Auth System 24/7",
+        "bot": bot.user.name if bot.user else "connecting"
+    })
+
 async def handle_ping(request):
     return web.json_response({"status": "online", "bot": bot.user.name if bot.user else "connecting"})
 
+async def keep_alive_task():
+    await bot.wait_until_ready()
+    render_url = os.environ.get("RENDER_EXTERNAL_URL", "https://mardin-auth.onrender.com")
+    ping_url = f"{render_url}/api/ping"
+    print(f"[+] Keep-alive aktif edildi: {ping_url}")
+    while not bot.is_closed():
+        await asyncio.sleep(300)
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(ping_url, timeout=15) as resp:
+                    print(f"[KeepAlive] Self ping status: {resp.status}")
+        except Exception as e:
+            print(f"[KeepAlive] Self ping error: {e}")
+
 async def start_server():
     app = web.Application()
+    app.router.add_get("/", handle_root)
     app.router.add_get("/api/verify", handle_verify)
     app.router.add_get("/api/ping", handle_ping)
     runner = web.AppRunner(app)
@@ -402,6 +425,7 @@ async def start_server():
 
 async def main():
     await start_server()
+    asyncio.create_task(keep_alive_task())
     async with bot:
         await bot.start(BOT_TOKEN)
 
