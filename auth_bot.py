@@ -24,19 +24,17 @@ CREATE TABLE IF NOT EXISTS users (
     hwid TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    expires_at TIMESTAMP,
-    is_killed INTEGER DEFAULT 0
+    expires_at TIMESTAMP
 )
 """)
 conn.commit()
 
-# Eski tablolarda kolonlar eksikse otomatik ekle
-for col_def in ["expires_at TIMESTAMP", "is_killed INTEGER DEFAULT 0"]:
-    try:
-        cursor.execute(f"ALTER TABLE users ADD COLUMN {col_def}")
-        conn.commit()
-    except Exception:
-        pass
+# Eski tablodaki is_killed vs varsa hepsini temizle/resetle
+try:
+    cursor.execute("UPDATE users SET is_killed = 0")
+    conn.commit()
+except Exception:
+    pass
 
 # Discord Bot
 intents = discord.Intents.default()
@@ -80,7 +78,7 @@ async def on_ready():
     except Exception as e:
         print(f"[-] Slash sync hatasi: {e}")
     try:
-        await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="Mardin 7/24 Canli Kill-Switch"))
+        await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="Mardin 7/24 Auth"))
     except Exception as e:
         pass
 
@@ -106,8 +104,8 @@ class AddLicenseWithDurationModal(discord.ui.Modal, title="Yeni Süreli Lisans E
             expiry_str = expiry.strftime("%Y-%m-%d %H:%M:%S") if expiry else None
 
             cursor.execute("""
-            INSERT OR REPLACE INTO users (discord_id, hwid, updated_at, expires_at, is_killed)
-            VALUES (?, NULL, CURRENT_TIMESTAMP, ?, 0)
+            INSERT OR REPLACE INTO users (discord_id, hwid, updated_at, expires_at)
+            VALUES (?, NULL, CURRENT_TIMESTAMP, ?)
             """, (clean_id, expiry_str))
             conn.commit()
 
@@ -124,25 +122,6 @@ class AddLicenseWithDurationModal(discord.ui.Modal, title="Yeni Süreli Lisans E
         except Exception as e:
             await interaction.response.send_message(f"❌ Hata: `{str(e)}`", ephemeral=True)
 
-class KillSwitchModal(discord.ui.Modal, title="Hileyi Canlı Sonlandır (Kill)"):
-    discord_id_input = discord.ui.TextInput(
-        label="Kullanıcı Discord ID",
-        placeholder="Örn: 1188473961139425341",
-        required=True
-    )
-
-    async def on_submit(self, interaction: discord.Interaction):
-        try:
-            clean_id = self.discord_id_input.value.replace("<@", "").replace(">", "").replace("!", "").strip()
-            cursor.execute("UPDATE users SET is_killed = 1 WHERE discord_id = ?", (clean_id,))
-            conn.commit()
-            await interaction.response.send_message(
-                f"🛑 **KILL EMRİ VERİLDİ!**\n<@{clean_id}> kullanıcısının hilesi saniyeler içinde anında kapatılacak ve kendini temizleyecektir.",
-                ephemeral=False
-            )
-        except Exception as e:
-            await interaction.response.send_message(f"❌ Hata: `{str(e)}`", ephemeral=True)
-
 class ResetHWIDModal(discord.ui.Modal, title="HWID Sıfırlama (Reset)"):
     discord_id_input = discord.ui.TextInput(
         label="Kullanıcı Discord ID",
@@ -153,10 +132,10 @@ class ResetHWIDModal(discord.ui.Modal, title="HWID Sıfırlama (Reset)"):
     async def on_submit(self, interaction: discord.Interaction):
         try:
             clean_id = self.discord_id_input.value.replace("<@", "").replace(">", "").replace("!", "").strip()
-            cursor.execute("UPDATE users SET hwid = NULL, is_killed = 0, updated_at = CURRENT_TIMESTAMP WHERE discord_id = ?", (clean_id,))
+            cursor.execute("UPDATE users SET hwid = NULL, updated_at = CURRENT_TIMESTAMP WHERE discord_id = ?", (clean_id,))
             conn.commit()
             await interaction.response.send_message(
-                f"🔄 <@{clean_id}> kullanıcısının HWID kilidi sıfırlandı ve kill durumu kaldırıldı!",
+                f"🔄 <@{clean_id}> kullanıcısının HWID kilidi sıfırlandı!",
                 ephemeral=False
             )
         except Exception as e:
@@ -174,7 +153,7 @@ class DeleteLicenseModal(discord.ui.Modal, title="Lisans Sil"):
             clean_id = self.discord_id_input.value.replace("<@", "").replace(">", "").replace("!", "").strip()
             cursor.execute("DELETE FROM users WHERE discord_id = ?", (clean_id,))
             conn.commit()
-            await interaction.response.send_message(f"🗑️ <@{clean_id}> lisansı tamamen silindi. Oyundaysa hilesi otomatik kapanacaktır.", ephemeral=False)
+            await interaction.response.send_message(f"🗑️ <@{clean_id}> lisansı tamamen silindi.", ephemeral=False)
         except Exception as e:
             await interaction.response.send_message(f"❌ Hata: `{str(e)}`", ephemeral=True)
 
@@ -189,13 +168,6 @@ class AuthControlView(discord.ui.View):
             return
         await interaction.response.send_modal(AddLicenseWithDurationModal())
 
-    @discord.ui.button(label="🛑 Hileyi Kapat (Kill-Switch)", style=discord.ButtonStyle.danger, custom_id="btn_kill_cheat")
-    async def btn_kill_cheat(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not is_admin(interaction):
-            await interaction.response.send_message("❌ Sadece yetkililer kullanabilir.", ephemeral=True)
-            return
-        await interaction.response.send_modal(KillSwitchModal())
-
     @discord.ui.button(label="🔄 HWID Sıfırla (Reset)", style=discord.ButtonStyle.blurple, custom_id="btn_reset_hwid")
     async def btn_reset_hwid(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not is_admin(interaction):
@@ -209,7 +181,7 @@ class AuthControlView(discord.ui.View):
             await interaction.response.send_message("❌ Sadece yetkililer kullanabilir.", ephemeral=True)
             return
 
-        cursor.execute("SELECT discord_id, hwid, expires_at, is_killed FROM users")
+        cursor.execute("SELECT discord_id, hwid, expires_at FROM users")
         rows = cursor.fetchall()
 
         if not rows:
@@ -220,9 +192,8 @@ class AuthControlView(discord.ui.View):
         embed = discord.Embed(title="📋 Kayıtlı Lisans Listesi", color=0x00FF00)
         desc = ""
         for r in rows:
-            d_id, hw, exp_str, killed = r[0], r[1], r[2], r[3]
+            d_id, hw, exp_str = r[0], r[1], r[2]
             hw_status = "✅ Kilitli" if hw else "⏳ F5 Bekliyor"
-            state = "🛑 [KAPATILDI]" if killed else "🟢 [AKTİF]"
 
             if exp_str:
                 exp_date = datetime.strptime(exp_str, "%Y-%m-%d %H:%M:%S")
@@ -234,7 +205,7 @@ class AuthControlView(discord.ui.View):
             else:
                 dur_info = "♾️ Süresiz"
 
-            desc += f"• <@{d_id}> (`{d_id}`) | {state} | {hw_status} | {dur_info}\n"
+            desc += f"• <@{d_id}> (`{d_id}`) | {hw_status} | {dur_info}\n"
 
         embed.description = desc
         await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -248,51 +219,22 @@ class AuthControlView(discord.ui.View):
 
 # --- SLASH KOMUTLARI ---
 
-@bot.tree.command(name="wh", description="Kill-Switch Destekli HWID Auth Panelini açar.")
+@bot.tree.command(name="wh", description="HWID Auth Panelini açar.")
 async def slash_wh(interaction: discord.Interaction):
     if not is_admin(interaction):
         await interaction.response.send_message("❌ Bu komutu sadece yetkililer kullanabilir.", ephemeral=True)
         return
 
     embed = discord.Embed(
-        title="🛡️ Mardin Auth Kontrol Paneli (Canlı Kill Destekli)",
+        title="🛡️ Mardin Auth Kontrol Paneli",
         description="**Yönetim Seçenekleri:**\n\n"
                     "• **➕ Yeni Lisans Ekle**: Süreli veya süresiz yeni üyelik açar.\n"
-                    "• **🛑 Hileyi Kapat (Kill-Switch)**: Kullanıcı oyundayken bile anında hilesini sonlandırır!\n"
-                    "• **🔄 HWID Sıfırla**: Kullanıcının HWID kilidini kaldırır, kill durumunu açar.\n"
-                    "• **📜 Kayıtlı Lisanslar**: Kalan süreleri ve aktif/kapalı durumları döker.",
+                    "• **🔄 HWID Sıfırla**: Kullanıcının HWID kilidini kaldırır.\n"
+                    "• **📜 Kayıtlı Lisanslar**: Kalan süreleri ve aktif kullanıcıları döker.",
         color=0xED4245
     )
-    embed.set_footer(text="Mardin Private Auth • 7/24 Kesintisiz Canlı Koruma")
+    embed.set_footer(text="Mardin Private Auth • 7/24 Kesintisiz Koruma")
     await interaction.response.send_message(embed=embed, view=AuthControlView())
-
-@bot.tree.command(name="wh_kill", description="Oyundaki bir kullanıcının hilesini/enjeksiyonunu anında kapatır.")
-@app_commands.describe(kullanici="Hilesi kapatılacak kullanıcı (@etiket veya ID)")
-async def slash_wh_kill(interaction: discord.Interaction, kullanici: str):
-    if not is_admin(interaction):
-        await interaction.response.send_message("❌ Yetkiniz yok!", ephemeral=True)
-        return
-
-    clean_id = kullanici.replace("<@", "").replace(">", "").replace("!", "").strip()
-    cursor.execute("UPDATE users SET is_killed = 1 WHERE discord_id = ?", (clean_id,))
-    conn.commit()
-
-    await interaction.response.send_message(
-        f"🛑 **KILL EMRİ VERİLDİ!**\n<@{clean_id}> kullanıcısının hilesi saniyeler içinde oyundan düşürülecek ve overlay kapatılacaktır."
-    )
-
-@bot.tree.command(name="wh_unkill", description="Kullanıcının kill cezasını kaldırır, hileyi tekrar açmasına izin verir.")
-@app_commands.describe(kullanici="Kullanıcı (@etiket veya ID)")
-async def slash_wh_unkill(interaction: discord.Interaction, kullanici: str):
-    if not is_admin(interaction):
-        await interaction.response.send_message("❌ Yetkiniz yok!", ephemeral=True)
-        return
-
-    clean_id = kullanici.replace("<@", "").replace(">", "").replace("!", "").strip()
-    cursor.execute("UPDATE users SET is_killed = 0 WHERE discord_id = ?", (clean_id,))
-    conn.commit()
-
-    await interaction.response.send_message(f"✅ <@{clean_id}> kullanıcısının kill durumu kaldırıldı, tekrar giriş yapabilir.")
 
 @bot.tree.command(name="wh_ekle", description="Bir kullanıcıya gün süreli lisans tanımlar.")
 @app_commands.describe(
@@ -313,8 +255,8 @@ async def slash_wh_ekle(interaction: discord.Interaction, kullanici: str, sure: 
         return
 
     cursor.execute("""
-    INSERT OR REPLACE INTO users (discord_id, hwid, updated_at, expires_at, is_killed)
-    VALUES (?, NULL, CURRENT_TIMESTAMP, ?, 0)
+    INSERT OR REPLACE INTO users (discord_id, hwid, updated_at, expires_at)
+    VALUES (?, NULL, CURRENT_TIMESTAMP, ?)
     """, (clean_id, expiry_str))
     conn.commit()
 
@@ -369,11 +311,11 @@ async def slash_wh_sifirla(interaction: discord.Interaction, kullanici: str):
         return
 
     clean_id = kullanici.replace("<@", "").replace(">", "").replace("!", "").strip()
-    cursor.execute("UPDATE users SET hwid = NULL, is_killed = 0, updated_at = CURRENT_TIMESTAMP WHERE discord_id = ?", (clean_id,))
+    cursor.execute("UPDATE users SET hwid = NULL, updated_at = CURRENT_TIMESTAMP WHERE discord_id = ?", (clean_id,))
     conn.commit()
-    await interaction.response.send_message(f"🔄 <@{clean_id}> kullanıcısının HWID kilidi ve kill durumu sıfırlandı.")
+    await interaction.response.send_message(f"🔄 <@{clean_id}> kullanıcısının HWID kilidi sıfırlandı.")
 
-@bot.tree.command(name="wh_sil", description="Kullanıcının lisansını tamamen siler (Oyundaysa otomatik kapatır).")
+@bot.tree.command(name="wh_sil", description="Kullanıcının lisansını tamamen siler.")
 @app_commands.describe(kullanici="Silinecek kullanıcı (@etiket veya Discord ID)")
 async def slash_wh_sil(interaction: discord.Interaction, kullanici: str):
     if not is_admin(interaction):
@@ -385,7 +327,7 @@ async def slash_wh_sil(interaction: discord.Interaction, kullanici: str):
     conn.commit()
     await interaction.response.send_message(f"🗑️ <@{clean_id}> lisansı tamamen silindi.")
 
-# --- HTTP AUTH & CANLI HEARTBEAT ENDPOINT ---
+# --- HTTP AUTH ENDPOINT ---
 async def handle_verify(request):
     hwid = request.query.get("hwid", "").strip()
     discord_id = request.query.get("discord_id", "").strip()
@@ -400,29 +342,20 @@ async def handle_verify(request):
     if not hwid:
         return web.json_response({"status": "error", "authorized": False, "message": "HWID eksik"}, status=400)
 
-    cursor.execute("SELECT hwid, expires_at, is_killed FROM users WHERE discord_id = ?", (discord_id,))
+    cursor.execute("SELECT hwid, expires_at FROM users WHERE discord_id = ?", (discord_id,))
     row = cursor.fetchone()
 
     if not row:
         return web.json_response({
             "status": "denied",
             "authorized": False,
-            "message": "Lisans bulunamadi veya yetkili tarafindan silindi!"
+            "message": "Lisans bulunamadi! Yetkili tarafindan eklenmemis."
         }, status=403)
 
     saved_hwid = row[0]
     expires_at_str = row[1]
-    is_killed = row[2]
 
-    # 1. KILL-SWITCH KONTROLÜ (Bot üzerinden kapatıldı mı?)
-    if is_killed:
-        return web.json_response({
-            "status": "killed",
-            "authorized": False,
-            "message": "Yetkili tarafindan enjeksiyon sonlandirildi (Kill-Switch)!"
-        }, status=403)
-
-    # 2. SÜRE KONTROLÜ
+    # SÜRE KONTROLÜ
     if expires_at_str:
         try:
             exp_time = datetime.strptime(expires_at_str, "%Y-%m-%d %H:%M:%S")
@@ -435,7 +368,7 @@ async def handle_verify(request):
         except Exception as e:
             print(f"[-] Date parse error: {e}")
 
-    # 3. HWID EŞLEŞTİRME
+    # HWID EŞLEŞTİRME
     if not saved_hwid:
         cursor.execute("UPDATE users SET hwid = ?, updated_at = CURRENT_TIMESTAMP WHERE discord_id = ?", (hwid, discord_id))
         conn.commit()
