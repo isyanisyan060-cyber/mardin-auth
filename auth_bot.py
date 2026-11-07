@@ -30,6 +30,12 @@ CREATE TABLE IF NOT EXISTS users (
 """)
 conn.commit()
 
+try:
+    cursor.execute("ALTER TABLE users ADD COLUMN expires_at TIMESTAMP")
+    conn.commit()
+except Exception:
+    pass
+
 # Eski tablodaki is_killed vs varsa hepsini temizle/resetle
 try:
     cursor.execute("UPDATE users SET is_killed = 0")
