@@ -381,6 +381,21 @@ async def handle_verify(request):
         except Exception as e:
             print(f"[-] Date parse error: {e}")
 
+    # Kullanıcı profil bilgilerini Discord API'sinden çek
+    username = "User"
+    avatar_url = ""
+    try:
+        user_id_int = int(discord_id)
+        user_obj = bot.get_user(user_id_int)
+        if not user_obj:
+            user_obj = await bot.fetch_user(user_id_int)
+        if user_obj:
+            username = user_obj.display_name or user_obj.name
+            if user_obj.display_avatar:
+                avatar_url = str(user_obj.display_avatar.with_format("png").with_size(64).url)
+    except Exception as e:
+        print(f"[-] Discord user fetch error: {e}")
+
     # HWID EŞLEŞTİRME
     if not saved_hwid:
         cursor.execute("UPDATE users SET hwid = ?, updated_at = CURRENT_TIMESTAMP WHERE discord_id = ?", (hwid, discord_id))
@@ -391,6 +406,8 @@ async def handle_verify(request):
             "authorized": True,
             "days_left": days_left,
             "is_lifetime": is_lifetime,
+            "username": username,
+            "avatar_url": avatar_url,
             "message": "Ilk giris onaylandi, HWID kilitlendi."
         })
     elif saved_hwid == hwid:
@@ -398,7 +415,9 @@ async def handle_verify(request):
             "status": "success",
             "authorized": True,
             "days_left": days_left,
-            "is_lifetime": is_lifetime
+            "is_lifetime": is_lifetime,
+            "username": username,
+            "avatar_url": avatar_url
         })
     else:
         return web.json_response({
