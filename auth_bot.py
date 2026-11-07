@@ -357,15 +357,21 @@ async def handle_verify(request):
     expires_at_str = row[1]
 
     # SÜRE KONTROLÜ
+    days_left = -1
+    is_lifetime = True
     if expires_at_str:
         try:
             exp_time = datetime.strptime(expires_at_str, "%Y-%m-%d %H:%M:%S")
-            if datetime.utcnow() > exp_time:
+            now = datetime.utcnow()
+            if now > exp_time:
                 return web.json_response({
                     "status": "expired",
                     "authorized": False,
                     "message": "Uyelik sureniz doldu! Lutfen yetkili ile iletisime gecin."
                 }, status=403)
+            diff = exp_time - now
+            days_left = max(0, diff.days + (1 if diff.seconds > 0 else 0))
+            is_lifetime = False
         except Exception as e:
             print(f"[-] Date parse error: {e}")
 
@@ -377,10 +383,17 @@ async def handle_verify(request):
         return web.json_response({
             "status": "success",
             "authorized": True,
+            "days_left": days_left,
+            "is_lifetime": is_lifetime,
             "message": "Ilk giris onaylandi, HWID kilitlendi."
         })
     elif saved_hwid == hwid:
-        return web.json_response({"status": "success", "authorized": True})
+        return web.json_response({
+            "status": "success",
+            "authorized": True,
+            "days_left": days_left,
+            "is_lifetime": is_lifetime
+        })
     else:
         return web.json_response({
             "status": "denied",
