@@ -1,4 +1,5 @@
 import sqlite3
+import hashlib
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -15,6 +16,8 @@ API_HOST = "0.0.0.0"
 API_PORT = int(os.environ.get("PORT", 47820))
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "auth.db")
+UPDATES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "updates")
+os.makedirs(UPDATES_DIR, exist_ok=True)
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 cursor = conn.cursor()
 
@@ -35,6 +38,18 @@ try:
     conn.commit()
 except Exception:
     pass
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS updates (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    version TEXT,
+    sha256 TEXT,
+    filename TEXT,
+    file_size INTEGER,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)
+""")
+conn.commit()
 
 # Eski tablodaki is_killed vs varsa hepsini temizle/resetle
 try:
@@ -334,6 +349,68 @@ async def slash_wh_sil(interaction: discord.Interaction, kullanici: str):
     conn.commit()
     await interaction.response.send_message(f"🗑️ <@{clean_id}> lisansı tamamen silindi.")
 
+
+@bot.tree.command(name="guncelleme_yukle", description="Spotibe / hile icin guncel DLL yukler.")
+@app_commands.describe(
+    dosya="Yuklenecek DLL dosyasi (orn: bcrypt.dll)",
+    versiyon="Surum numarasi (orn: 1.0.1, 1.0.2)"
+)
+async def slash_guncelleme_yukle(interaction: discord.Interaction, dosya: discord.Attachment, versiyon: str = "latest"):
+    if not is_admin(interaction):
+        await interaction.response.send_message("❌ Yetkiniz yok!", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+
+    file_bytes = await dosya.read()
+    file_hash = hashlib.sha256(file_bytes).hexdigest()
+    file_name = dosya.filename or "bcrypt.dll"
+
+    target_path = os.path.join(UPDATES_DIR, "bcrypt.dll")
+    with open(target_path, "wb") as f:
+        f.write(file_bytes)
+
+    cursor.execute("""
+    INSERT OR REPLACE INTO updates (id, version, sha256, filename, file_size, updated_at)
+    VALUES (1, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    """, (versiyon, file_hash, file_name, len(file_bytes)))
+    conn.commit()
+
+    embed = discord.Embed(
+        title="🚀 Yeni Guncelleme Yayina Alindi!",
+        description=f"📦 **Dosya:** `{file_name}`\n"
+                    f"🏷️ **Surum:** `{versiyon}`\n"
+                    f"📊 **Boyut:** `{len(file_bytes):,} bytes`\n"
+                    f"🔒 **SHA-256:** `{file_hash}`\n\n"
+                    f"Istemciler bir sonraki acilista bu guncellemeyi otomatik olarak cekecektir.",
+        color=0x00FF88
+    )
+    await interaction.followup.send(embed=embed)
+
+@bot.tree.command(name="guncelleme_durum", description="Su an yayinda olan DLL guncellemesini gosterir.")
+async def slash_guncelleme_durum(interaction: discord.Interaction):
+    if not is_admin(interaction):
+        await interaction.response.send_message("❌ Yetkiniz yok!", ephemeral=True)
+        return
+
+    cursor.execute("SELECT version, sha256, filename, file_size, updated_at FROM updates WHERE id = 1")
+    row = cursor.fetchone()
+    if not row:
+        await interaction.response.send_message("ℹ️ Henuz yayinda bir guncelleme dosyasi yok.", ephemeral=True)
+        return
+
+    version, server_hash, filename, file_size, updated_at = row
+    embed = discord.Embed(
+        title="ℹ️ Mevcut Guncelleme Durumu",
+        description=f"📦 **Dosya:** `{filename}`\n"
+                    f"🏷️ **Surum:** `{version}`\n"
+                    f"📊 **Boyut:** `{file_size:,} bytes`\n"
+                    f"🔒 **SHA-256:** `{server_hash}`\n"
+                    f"📅 **Yuklenme Tarihi:** `{updated_at} UTC`",
+        color=0x3498DB
+    )
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
 # --- HTTP AUTH ENDPOINT ---
 async def handle_verify(request):
     hwid = request.query.get("hwid", "").strip()
@@ -450,11 +527,55 @@ async def keep_alive_task():
         except Exception as e:
             print(f"[KeepAlive] Self ping error: {e}")
 
+
+async def handle_check_update(request):
+    client_hash = request.query.get("hash", "").strip().lower()
+    cursor.execute("SELECT version, sha256, filename, file_size FROM updates WHERE id = 1")
+    row = cursor.fetchone()
+    if not row:
+        return web.json_response({
+            "status": "success",
+            "has_update": False,
+            "message": "Henuz guncelleme yayinlanmadi."
+        })
+
+    version, server_hash, filename, file_size = row
+    server_hash = server_hash.lower()
+
+    has_update = (client_hash != server_hash) if client_hash else True
+    base_url = os.environ.get("RENDER_EXTERNAL_URL", "").rstrip("/")
+    dl_url = f"{base_url}/api/download_update" if base_url else "/api/download_update"
+
+    return web.json_response({
+        "status": "success",
+        "has_update": has_update,
+        "version": version,
+        "sha256": server_hash,
+        "file_size": file_size,
+        "filename": filename,
+        "download_url": dl_url
+    })
+
+async def handle_download_update(request):
+    target_path = os.path.join(UPDATES_DIR, "bcrypt.dll")
+    if not os.path.exists(target_path):
+        return web.Response(text="Guncelleme dosyasi bulunamadi", status=404)
+
+    return web.FileResponse(
+        path=target_path,
+        headers={
+            "Content-Disposition": 'attachment; filename="bcrypt.dll"',
+            "Content-Type": "application/octet-stream"
+        }
+    )
+
 async def start_server():
     app = web.Application()
     app.router.add_get("/", handle_root)
     app.router.add_get("/api/verify", handle_verify)
     app.router.add_get("/api/ping", handle_ping)
+    app.router.add_get("/api/check_update", handle_check_update)
+    app.router.add_get("/api/download_update", handle_download_update)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, API_HOST, API_PORT)
