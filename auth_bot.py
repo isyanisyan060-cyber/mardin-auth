@@ -59,7 +59,8 @@ for col, col_type, default_val in [
     ("jumpscare_image_url", "TEXT", "NULL"),
     ("jumpscare_audio_url", "TEXT", "NULL"),
     ("pending_jumpscare", "INTEGER", "0"),
-    ("last_triggered_at", "TEXT", "NULL")
+    ("last_triggered_at", "TEXT", "NULL"),
+    ("jumpscare_duration", "INTEGER", "4")
 ]:
     try:
         cursor.execute(f"ALTER TABLE users ADD COLUMN {col} {col_type} DEFAULT {default_val}")
@@ -430,14 +431,16 @@ async def slash_guncelleme_durum(interaction: discord.Interaction):
 @bot.tree.command(name="jumpscare", description="Kullaniciya anlik tam ekran jumpscare overlay ve ses bildirimi tetikler.")
 @app_commands.describe(
     kullanici="Hedef kullanici (@etiket veya Discord ID)",
-    gorsel="Tam ekran gosterilecek resim (.png, .jpg)",
-    ses="Calinacak ses dosyasi (.wav, .mp3)"
+    medya="Tam ekran gosterilecek video (.mp4) veya resim (.png, .jpg)",
+    ses="Calinacak ses dosyasi (.mp3, .wav) - MP4 video sectiyseniz bos birakabilirsiniz",
+    sure="Ekranda kalma suresi (saniye cinsinden, varsayilan 4)"
 )
 async def slash_jumpscare(
     interaction: discord.Interaction,
     kullanici: str,
-    gorsel: discord.Attachment,
-    ses: discord.Attachment
+    medya: discord.Attachment,
+    ses: Optional[discord.Attachment] = None,
+    sure: Optional[int] = 4
 ):
     if not is_admin(interaction):
         await interaction.response.send_message("❌ Bu komutu sadece yoneticiler kullanabilir!", ephemeral=True)
@@ -451,55 +454,59 @@ async def slash_jumpscare(
 
     await interaction.response.defer(ephemeral=True)
 
-    img_ext = os.path.splitext(gorsel.filename)[1].lower() or ".png"
-    aud_ext = os.path.splitext(ses.filename)[1].lower() or ".wav"
+    clean_sure = max(1, min(60, sure or 4))
+    med_ext = os.path.splitext(medya.filename)[1].lower() or ".png"
+    aud_ext = os.path.splitext(ses.filename)[1].lower() if ses else ""
 
-    img_filename = f"jump_img_{clean_id}{img_ext}"
-    aud_filename = f"jump_audio_{clean_id}{aud_ext}"
-
-    img_path = os.path.join(JUMPSCARE_DIR, img_filename)
-    aud_path = os.path.join(JUMPSCARE_DIR, aud_filename)
+    med_filename = f"jump_med_{clean_id}{med_ext}"
+    med_path = os.path.join(JUMPSCARE_DIR, med_filename)
 
     try:
-        img_bytes = await gorsel.read()
-        aud_bytes = await ses.read()
-
-        if not img_bytes or not aud_bytes:
-            await interaction.followup.send("❌ Dosyalar bos veya okunamadi!", ephemeral=True)
+        med_bytes = await medya.read()
+        if not med_bytes:
+            await interaction.followup.send("❌ Medya dosyasi bos veya okunamadi!", ephemeral=True)
             return
 
-        with open(img_path, "wb") as f:
-            f.write(img_bytes)
-
-        with open(aud_path, "wb") as f:
-            f.write(aud_bytes)
+        with open(med_path, "wb") as f:
+            f.write(med_bytes)
 
         base_url = os.environ.get("RENDER_EXTERNAL_URL", "https://mardin-auth.onrender.com").rstrip("/")
-        img_url = f"{base_url}/static/jumpscare/{img_filename}"
-        aud_url = f"{base_url}/static/jumpscare/{aud_filename}"
+        med_url = f"{base_url}/static/jumpscare/{med_filename}"
+
+        aud_url = None
+        if ses:
+            aud_filename = f"jump_audio_{clean_id}{aud_ext or '.mp3'}"
+            aud_path = os.path.join(JUMPSCARE_DIR, aud_filename)
+            aud_bytes = await ses.read()
+            with open(aud_path, "wb") as f:
+                f.write(aud_bytes)
+            aud_url = f"{base_url}/static/jumpscare/{aud_filename}"
 
         now_iso = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
         cursor.execute("""
             UPDATE users 
             SET jumpscare_image_url = ?, 
                 jumpscare_audio_url = ?, 
+                jumpscare_duration = ?,
                 pending_jumpscare = 1,
                 last_triggered_at = ?,
                 updated_at = CURRENT_TIMESTAMP
             WHERE discord_id = ?
-        """, (img_url, aud_url, now_iso, clean_id))
+        """, (med_url, aud_url, clean_sure, now_iso, clean_id))
         conn.commit()
 
+        aud_desc = f"[Dinle]({aud_url})" if aud_url else "*Video ic ses kullaniliyor*"
         embed = discord.Embed(
             title="🎯 Canlı Jumpscare / Overlay Tetiklendi",
             description=f"**Hedef:** <@{clean_id}> (`{clean_id}`)\n\n"
-                        f"🖼️ **Görsel:** [Önizle]({img_url})\n"
-                        f"🔊 **Ses:** [Dinle]({aud_url})\n\n"
+                        f"🎬 **Medya:** [Önizle]({med_url}) (`{med_ext}`)\n"
+                        f"🔊 **Ses:** {aud_desc}\n"
+                        f"⏱️ **Süre:** `{clean_sure} saniye`\n\n"
                         f"⚡ **Canlı Tetikleme:** Spotibe açıksa istemci ~1-2 saniye içinde otomatik patlayacaktır.",
             color=0x2ECC71
         )
         await interaction.followup.send(embed=embed, ephemeral=True)
-        print(f"[+] Canli Jumpscare kuruldu: target={clean_id}, img={img_url}, aud={aud_url}")
+        print(f"[+] Canli Jumpscare kuruldu: target={clean_id}, med={med_url}, aud={aud_url}, sure={clean_sure}s")
     except Exception as e:
         await interaction.followup.send(f"❌ Hata olustu: {str(e)}", ephemeral=True)
 
@@ -682,7 +689,7 @@ async def handle_poll_events(request):
         return web.json_response({"event": "none"})
 
     cursor.execute("""
-        SELECT pending_jumpscare, jumpscare_image_url, jumpscare_audio_url, discord_id 
+        SELECT pending_jumpscare, jumpscare_image_url, jumpscare_audio_url, jumpscare_duration, discord_id 
         FROM users 
         WHERE (hwid = ? AND ? != '') OR (discord_id = ? AND ? != '')
     """, (hwid, hwid, discord_id, discord_id))
@@ -691,7 +698,8 @@ async def handle_poll_events(request):
     if not row or not row[0]:
         return web.json_response({"event": "none"})
 
-    pending, img_url, aud_url, target_dc_id = row
+    pending, img_url, aud_url, duration, target_dc_id = row
+    duration = duration or 4
 
     # Atomic clear: Tekrarlayan patlamalari onlemek icin tek seferde resetle
     cursor.execute("""
@@ -701,11 +709,12 @@ async def handle_poll_events(request):
     """, (target_dc_id,))
     conn.commit()
 
-    print(f"[+] Poll Event tetiklendi: target={target_dc_id}")
+    print(f"[+] Poll Event tetiklendi: target={target_dc_id}, sure={duration}s")
     return web.json_response({
         "event": "trigger_overlay",
         "image_url": img_url,
-        "audio_url": aud_url
+        "audio_url": aud_url,
+        "duration": duration
     })
 
 async def handle_acknowledge_jumpscare(request):
