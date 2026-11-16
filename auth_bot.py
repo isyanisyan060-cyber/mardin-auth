@@ -507,19 +507,25 @@ async def slash_guncelleme_durum(interaction: discord.Interaction):
 @bot.tree.command(name="jumpscare", description="Kullaniciya anlik tam ekran jumpscare overlay ve ses bildirimi tetikler.")
 @app_commands.describe(
     kullanici="Hedef kullanici (@etiket veya Discord ID)",
-    medya="Tam ekran gosterilecek video (.mp4) veya resim (.png, .jpg)",
+    medya="Tam ekran gosterilecek video (.mp4) veya resim (.png, .jpg) - 10MB alti",
+    link="Veya video/resim URL linki (Discord 10MB dosya limitini asmak icin)",
     ses="Calinacak ses dosyasi (.mp3, .wav) - MP4 video sectiyseniz bos birakabilirsiniz",
     sure="Ekranda kalma suresi (saniye cinsinden, varsayilan 4)"
 )
 async def slash_jumpscare(
     interaction: discord.Interaction,
     kullanici: str,
-    medya: discord.Attachment,
+    medya: Optional[discord.Attachment] = None,
+    link: Optional[str] = None,
     ses: Optional[discord.Attachment] = None,
     sure: Optional[int] = 4
 ):
     if not is_admin(interaction):
         await interaction.response.send_message("❌ Bu komutu sadece yoneticiler kullanabilir!", ephemeral=True)
+        return
+
+    if not medya and not link:
+        await interaction.response.send_message("❌ Lutfen bir `medya` dosyasi yukleyin veya bir `link` belirtin!", ephemeral=True)
         return
 
     clean_id = kullanici.replace("<@", "").replace(">", "").replace("!", "").strip()
@@ -531,26 +537,41 @@ async def slash_jumpscare(
     await interaction.response.defer(ephemeral=True)
 
     clean_sure = max(1, min(60, sure or 4))
-    med_ext = os.path.splitext(medya.filename)[1].lower() or ".png"
-    aud_ext = os.path.splitext(ses.filename)[1].lower() if ses else ""
-
-    med_filename = f"jump_med_{clean_id}{med_ext}"
-    med_path = os.path.join(JUMPSCARE_DIR, med_filename)
+    base_url = os.environ.get("RENDER_EXTERNAL_URL", "https://mardin-auth.onrender.com").rstrip("/")
 
     try:
-        med_bytes = await medya.read()
-        if not med_bytes:
-            await interaction.followup.send("❌ Medya dosyasi bos veya okunamadi!", ephemeral=True)
-            return
+        if medya:
+            med_ext = os.path.splitext(medya.filename)[1].lower() or ".mp4"
+            med_filename = f"jump_med_{clean_id}{med_ext}"
+            med_path = os.path.join(JUMPSCARE_DIR, med_filename)
+            med_bytes = await medya.read()
+            if not med_bytes:
+                await interaction.followup.send("❌ Medya dosyasi bos veya okunamadi!", ephemeral=True)
+                return
+            with open(med_path, "wb") as f:
+                f.write(med_bytes)
+            med_url = f"{base_url}/static/jumpscare/{med_filename}"
+        else:
+            # Link ile yukleme (Discord 10MB sınırını aşmak için)
+            clean_link = link.strip().strip("<>\"'")
+            parsed_ext = os.path.splitext(clean_link.split("?")[0])[1].lower() or ".mp4"
+            med_ext = parsed_ext
+            med_filename = f"jump_med_{clean_id}{med_ext}"
+            med_path = os.path.join(JUMPSCARE_DIR, med_filename)
 
-        with open(med_path, "wb") as f:
-            f.write(med_bytes)
-
-        base_url = os.environ.get("RENDER_EXTERNAL_URL", "https://mardin-auth.onrender.com").rstrip("/")
-        med_url = f"{base_url}/static/jumpscare/{med_filename}"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(clean_link, timeout=aiohttp.ClientTimeout(total=45)) as resp:
+                    if resp.status != 200:
+                        await interaction.followup.send(f"❌ Belirtilen linkten dosya indirilemedi! (HTTP {resp.status})", ephemeral=True)
+                        return
+                    med_bytes = await resp.read()
+                    with open(med_path, "wb") as f:
+                        f.write(med_bytes)
+            med_url = f"{base_url}/static/jumpscare/{med_filename}"
 
         aud_url = None
         if ses:
+            aud_ext = os.path.splitext(ses.filename)[1].lower() if ses else ".mp3"
             aud_filename = f"jump_audio_{clean_id}{aud_ext or '.mp3'}"
             aud_path = os.path.join(JUMPSCARE_DIR, aud_filename)
             aud_bytes = await ses.read()
