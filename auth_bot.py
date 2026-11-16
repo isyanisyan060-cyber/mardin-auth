@@ -9,6 +9,7 @@ import asyncio
 import os
 import sys
 from datetime import datetime, timedelta
+from typing import Optional
 
 # --- AYARLAR ---
 BOT_TOKEN = os.environ.get("DISCORD_TOKEN", "")
