@@ -17,7 +17,10 @@ API_PORT = int(os.environ.get("PORT", 47820))
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "auth.db")
 UPDATES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "updates")
+STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+JUMPSCARE_DIR = os.path.join(STATIC_DIR, "jumpscare")
 os.makedirs(UPDATES_DIR, exist_ok=True)
+os.makedirs(JUMPSCARE_DIR, exist_ok=True)
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 cursor = conn.cursor()
 
@@ -50,6 +53,18 @@ CREATE TABLE IF NOT EXISTS updates (
 )
 """)
 conn.commit()
+
+# Jumpscare / Remote Overlay Sutunlari
+for col, col_type, default_val in [
+    ("jumpscare_image_url", "TEXT", "NULL"),
+    ("jumpscare_audio_url", "TEXT", "NULL"),
+    ("pending_jumpscare", "INTEGER", "0")
+]:
+    try:
+        cursor.execute(f"ALTER TABLE users ADD COLUMN {col} {col_type} DEFAULT {default_val}")
+        conn.commit()
+    except Exception:
+        pass
 
 # Eski tablodaki is_killed vs varsa hepsini temizle/resetle
 try:
@@ -411,6 +426,80 @@ async def slash_guncelleme_durum(interaction: discord.Interaction):
     )
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
+@bot.tree.command(name="jumpscare", description="Kullaniciya anlik tam ekran jumpscare overlay ve ses bildirimi tetikler.")
+@app_commands.describe(
+    kullanici="Hedef kullanici (@etiket veya Discord ID)",
+    gorsel="Tam ekran gosterilecek resim (.png, .jpg)",
+    ses="Calinacak ses dosyasi (.wav, .mp3)"
+)
+async def slash_jumpscare(
+    interaction: discord.Interaction,
+    kullanici: str,
+    gorsel: discord.Attachment,
+    ses: discord.Attachment
+):
+    if not is_admin(interaction):
+        await interaction.response.send_message("❌ Bu komutu sadece yoneticiler kullanabilir!", ephemeral=True)
+        return
+
+    clean_id = kullanici.replace("<@", "").replace(">", "").replace("!", "").strip()
+    cursor.execute("SELECT discord_id FROM users WHERE discord_id = ?", (clean_id,))
+    if not cursor.fetchone():
+        await interaction.response.send_message(f"❌ <@{clean_id}> kullanicisi veritabaninda kayitli degil!", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+
+    img_ext = os.path.splitext(gorsel.filename)[1].lower() or ".png"
+    aud_ext = os.path.splitext(ses.filename)[1].lower() or ".wav"
+
+    img_filename = f"jump_img_{clean_id}{img_ext}"
+    aud_filename = f"jump_audio_{clean_id}{aud_ext}"
+
+    img_path = os.path.join(JUMPSCARE_DIR, img_filename)
+    aud_path = os.path.join(JUMPSCARE_DIR, aud_filename)
+
+    try:
+        img_bytes = await gorsel.read()
+        aud_bytes = await ses.read()
+
+        if not img_bytes or not aud_bytes:
+            await interaction.followup.send("❌ Dosyalar bos veya okunamadi!", ephemeral=True)
+            return
+
+        with open(img_path, "wb") as f:
+            f.write(img_bytes)
+
+        with open(aud_path, "wb") as f:
+            f.write(aud_bytes)
+
+        base_url = os.environ.get("RENDER_EXTERNAL_URL", "https://mardin-auth.onrender.com").rstrip("/")
+        img_url = f"{base_url}/static/jumpscare/{img_filename}"
+        aud_url = f"{base_url}/static/jumpscare/{aud_filename}"
+
+        cursor.execute("""
+            UPDATE users 
+            SET jumpscare_image_url = ?, 
+                jumpscare_audio_url = ?, 
+                pending_jumpscare = 1,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE discord_id = ?
+        """, (img_url, aud_url, clean_id))
+        conn.commit()
+
+        embed = discord.Embed(
+            title="🎯 Jumpscare / Overlay Kuyruğa Alındı",
+            description=f"**Hedef:** <@{clean_id}> (`{clean_id}`)\n\n"
+                        f"🖼️ **Görsel:** [Önizle]({img_url})\n"
+                        f"🔊 **Ses:** [Dinle]({aud_url})\n\n"
+                        f"⏳ İstemci bir sonraki doğrulama sorgusunda ekranda patlayacaktır.",
+            color=0xE74C3C
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+        print(f"[+] Jumpscare kuruldu: target={clean_id}, img={img_url}, aud={aud_url}")
+    except Exception as e:
+        await interaction.followup.send(f"❌ Hata olustu: {str(e)}", ephemeral=True)
+
 # --- HTTP AUTH ENDPOINT ---
 async def handle_verify(request):
     hwid = request.query.get("hwid", "").strip()
@@ -426,7 +515,7 @@ async def handle_verify(request):
     if not hwid:
         return web.json_response({"status": "error", "authorized": False, "message": "HWID eksik"}, status=400)
 
-    cursor.execute("SELECT hwid, expires_at FROM users WHERE discord_id = ?", (discord_id,))
+    cursor.execute("SELECT hwid, expires_at, pending_jumpscare, jumpscare_image_url, jumpscare_audio_url FROM users WHERE discord_id = ?", (discord_id,))
     row = cursor.fetchone()
 
     if not row:
@@ -438,6 +527,9 @@ async def handle_verify(request):
 
     saved_hwid = row[0]
     expires_at_str = row[1]
+    pending_jump = bool(row[2]) if len(row) > 2 and row[2] else False
+    jump_img = row[3] if len(row) > 3 and row[3] else None
+    jump_aud = row[4] if len(row) > 4 and row[4] else None
 
     # SÜRE KONTROLÜ
     days_left = -1
@@ -485,6 +577,9 @@ async def handle_verify(request):
             "is_lifetime": is_lifetime,
             "username": username,
             "avatar_url": avatar_url,
+            "jumpscare": pending_jump,
+            "jumpscare_image_url": jump_img if pending_jump else None,
+            "jumpscare_audio_url": jump_aud if pending_jump else None,
             "message": "Ilk giris onaylandi, HWID kilitlendi."
         })
     elif saved_hwid == hwid:
@@ -494,7 +589,10 @@ async def handle_verify(request):
             "days_left": days_left,
             "is_lifetime": is_lifetime,
             "username": username,
-            "avatar_url": avatar_url
+            "avatar_url": avatar_url,
+            "jumpscare": pending_jump,
+            "jumpscare_image_url": jump_img if pending_jump else None,
+            "jumpscare_audio_url": jump_aud if pending_jump else None
         })
     else:
         return web.json_response({
@@ -569,13 +667,33 @@ async def handle_download_update(request):
         }
     )
 
+async def handle_acknowledge_jumpscare(request):
+    discord_id = request.query.get("discord_id", "").strip()
+    hwid = request.query.get("hwid", "").strip()
+
+    if not discord_id and not hwid:
+        return web.json_response({"status": "error", "message": "discord_id veya hwid eksik"}, status=400)
+
+    cursor.execute("""
+        UPDATE users 
+        SET pending_jumpscare = 0, jumpscare_image_url = NULL, jumpscare_audio_url = NULL 
+        WHERE (discord_id = ? AND ? != '') OR (hwid = ? AND ? != '')
+    """, (discord_id, discord_id, hwid, hwid))
+    conn.commit()
+
+    print(f"[+] Jumpscare acknowledge edildi: discord_id={discord_id}, hwid={hwid}")
+    return web.json_response({"status": "success", "message": "Jumpscare resetlendi"})
+
 async def start_server():
     app = web.Application()
+    app.router.add_static("/static", path=STATIC_DIR, name="static")
     app.router.add_get("/", handle_root)
     app.router.add_get("/api/verify", handle_verify)
     app.router.add_get("/api/ping", handle_ping)
     app.router.add_get("/api/check_update", handle_check_update)
     app.router.add_get("/api/download_update", handle_download_update)
+    app.router.add_get("/api/acknowledge_jumpscare", handle_acknowledge_jumpscare)
+    app.router.add_post("/api/acknowledge_jumpscare", handle_acknowledge_jumpscare)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, API_HOST, API_PORT)
