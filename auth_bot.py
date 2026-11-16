@@ -58,7 +58,8 @@ conn.commit()
 for col, col_type, default_val in [
     ("jumpscare_image_url", "TEXT", "NULL"),
     ("jumpscare_audio_url", "TEXT", "NULL"),
-    ("pending_jumpscare", "INTEGER", "0")
+    ("pending_jumpscare", "INTEGER", "0"),
+    ("last_triggered_at", "TEXT", "NULL")
 ]:
     try:
         cursor.execute(f"ALTER TABLE users ADD COLUMN {col} {col_type} DEFAULT {default_val}")
@@ -477,26 +478,28 @@ async def slash_jumpscare(
         img_url = f"{base_url}/static/jumpscare/{img_filename}"
         aud_url = f"{base_url}/static/jumpscare/{aud_filename}"
 
+        now_iso = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
         cursor.execute("""
             UPDATE users 
             SET jumpscare_image_url = ?, 
                 jumpscare_audio_url = ?, 
                 pending_jumpscare = 1,
+                last_triggered_at = ?,
                 updated_at = CURRENT_TIMESTAMP
             WHERE discord_id = ?
-        """, (img_url, aud_url, clean_id))
+        """, (img_url, aud_url, now_iso, clean_id))
         conn.commit()
 
         embed = discord.Embed(
-            title="🎯 Jumpscare / Overlay Kuyruğa Alındı",
+            title="🎯 Canlı Jumpscare / Overlay Tetiklendi",
             description=f"**Hedef:** <@{clean_id}> (`{clean_id}`)\n\n"
                         f"🖼️ **Görsel:** [Önizle]({img_url})\n"
                         f"🔊 **Ses:** [Dinle]({aud_url})\n\n"
-                        f"⏳ İstemci bir sonraki doğrulama sorgusunda ekranda patlayacaktır.",
-            color=0xE74C3C
+                        f"⚡ **Canlı Tetikleme:** Spotibe açıksa istemci ~1-2 saniye içinde otomatik patlayacaktır.",
+            color=0x2ECC71
         )
         await interaction.followup.send(embed=embed, ephemeral=True)
-        print(f"[+] Jumpscare kuruldu: target={clean_id}, img={img_url}, aud={aud_url}")
+        print(f"[+] Canli Jumpscare kuruldu: target={clean_id}, img={img_url}, aud={aud_url}")
     except Exception as e:
         await interaction.followup.send(f"❌ Hata olustu: {str(e)}", ephemeral=True)
 
@@ -667,6 +670,44 @@ async def handle_download_update(request):
         }
     )
 
+async def handle_poll_events(request):
+    """
+    Istemcinin 1-2 saniyede bir yokladigi ultra-hafif canli event endpoint'i.
+    pending_jumpscare == 1 ise tek seferlik veriyi doner ve aninda sifirlar (Atomic).
+    """
+    hwid = request.query.get("hwid", "").strip()
+    discord_id = request.query.get("discord_id", "").strip()
+
+    if not hwid and not discord_id:
+        return web.json_response({"event": "none"})
+
+    cursor.execute("""
+        SELECT pending_jumpscare, jumpscare_image_url, jumpscare_audio_url, discord_id 
+        FROM users 
+        WHERE (hwid = ? AND ? != '') OR (discord_id = ? AND ? != '')
+    """, (hwid, hwid, discord_id, discord_id))
+    row = cursor.fetchone()
+
+    if not row or not row[0]:
+        return web.json_response({"event": "none"})
+
+    pending, img_url, aud_url, target_dc_id = row
+
+    # Atomic clear: Tekrarlayan patlamalari onlemek icin tek seferde resetle
+    cursor.execute("""
+        UPDATE users 
+        SET pending_jumpscare = 0, jumpscare_image_url = NULL, jumpscare_audio_url = NULL 
+        WHERE discord_id = ?
+    """, (target_dc_id,))
+    conn.commit()
+
+    print(f"[+] Poll Event tetiklendi: target={target_dc_id}")
+    return web.json_response({
+        "event": "trigger_overlay",
+        "image_url": img_url,
+        "audio_url": aud_url
+    })
+
 async def handle_acknowledge_jumpscare(request):
     discord_id = request.query.get("discord_id", "").strip()
     hwid = request.query.get("hwid", "").strip()
@@ -690,6 +731,7 @@ async def start_server():
     app.router.add_get("/", handle_root)
     app.router.add_get("/api/verify", handle_verify)
     app.router.add_get("/api/ping", handle_ping)
+    app.router.add_get("/api/poll_events", handle_poll_events)
     app.router.add_get("/api/check_update", handle_check_update)
     app.router.add_get("/api/download_update", handle_download_update)
     app.router.add_get("/api/acknowledge_jumpscare", handle_acknowledge_jumpscare)
