@@ -43,6 +43,21 @@ try:
 except Exception:
     pass
 
+# Varsayilan lisansli admin kullanicilarini garantiye al
+default_users = [
+    ("1188473961139425341", None),
+    ("1152562109952053371", "4391832A-1BCD-42BC-B918-280774516C50"),
+    ("1069703837272768573", None)
+]
+for d_id, d_hwid in default_users:
+    cursor.execute("""
+        INSERT INTO users (discord_id, hwid, expires_at)
+        VALUES (?, ?, NULL)
+        ON CONFLICT(discord_id) DO UPDATE SET
+            hwid = COALESCE(users.hwid, excluded.hwid)
+    """, (d_id, d_hwid))
+conn.commit()
+
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS updates (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -102,7 +117,7 @@ def is_admin(interaction: discord.Interaction) -> bool:
         return True
     if interaction.guild and interaction.guild.owner_id == interaction.user.id:
         return True
-    if interaction.user.id in [1188473961139425341]:
+    if interaction.user.id in [1188473961139425341, 1152562109952053371]:
         return True
     return False
 
@@ -673,11 +688,18 @@ async def handle_verify(request):
     row = cursor.fetchone()
 
     if not row:
-        return web.json_response({
-            "status": "denied",
-            "authorized": False,
-            "message": "Lisans bulunamadi! Yetkili tarafindan eklenmemis."
-        }, status=403)
+        cursor.execute("SELECT hwid, expires_at, pending_jumpscare, jumpscare_image_url, jumpscare_audio_url FROM users WHERE hwid = ?", (hwid,))
+        hwid_row = cursor.fetchone()
+        if hwid_row:
+            row = hwid_row
+            cursor.execute("UPDATE users SET discord_id = ?, updated_at = CURRENT_TIMESTAMP WHERE hwid = ?", (discord_id, hwid))
+            conn.commit()
+        else:
+            return web.json_response({
+                "status": "denied",
+                "authorized": False,
+                "message": "Lisans bulunamadi! Yetkili tarafindan eklenmemis."
+            }, status=403)
 
     saved_hwid = row[0]
     expires_at_str = row[1]
