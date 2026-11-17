@@ -893,11 +893,14 @@ async def handle_spotibe_latest_release(request):
         ]
     })
 
+GITHUB_RELEASE_SETUP_URL = "https://github.com/isyanisyan060-cyber/mardin-auth/releases/download/v3.1.5/Sonora-Setup.exe"
+GITHUB_RELEASE_SETUP_SHA256 = "e9d6656f2f845588f4ecc97046d8a8080baee6559539fa87564026a337ebaa9d"
+
 async def handle_release_sha256sums(request):
     setup_path = os.path.join(UPDATES_DIR, "Spotibe-Setup.exe")
     dll_path = os.path.join(UPDATES_DIR, "bcrypt.dll")
 
-    setup_hash = "0" * 64
+    setup_hash = GITHUB_RELEASE_SETUP_SHA256
     if os.path.exists(setup_path):
         with open(setup_path, "rb") as f:
             setup_hash = hashlib.sha256(f.read()).hexdigest()
@@ -916,33 +919,27 @@ async def handle_release_sha256sums(request):
 
 async def handle_release_download_setup(request):
     target_path = os.path.join(UPDATES_DIR, "Spotibe-Setup.exe")
-    if not os.path.exists(target_path):
-        target_path = os.path.join(UPDATES_DIR, "bcrypt.dll")
-        if not os.path.exists(target_path):
-            return web.Response(text="Setup dosyasi bulunamadi", status=404)
-
-    return web.FileResponse(
-        path=target_path,
-        headers={
-            "Content-Disposition": 'attachment; filename="Spotibe-Setup.exe"',
-            "Content-Type": "application/octet-stream"
-        }
-    )
+    if os.path.exists(target_path):
+        return web.FileResponse(
+            path=target_path,
+            headers={
+                "Content-Disposition": 'attachment; filename="Spotibe-Setup.exe"',
+                "Content-Type": "application/octet-stream"
+            }
+        )
+    raise web.HTTPFound(GITHUB_RELEASE_SETUP_URL)
 
 async def handle_release_download_sonora(request):
     target_path = os.path.join(UPDATES_DIR, "Spotibe-Setup.exe")
-    if not os.path.exists(target_path):
-        target_path = os.path.join(UPDATES_DIR, "bcrypt.dll")
-        if not os.path.exists(target_path):
-            return web.Response(text="Setup dosyasi bulunamadi", status=404)
-
-    return web.FileResponse(
-        path=target_path,
-        headers={
-            "Content-Disposition": 'attachment; filename="Sonora-Setup.exe"',
-            "Content-Type": "application/octet-stream"
-        }
-    )
+    if os.path.exists(target_path):
+        return web.FileResponse(
+            path=target_path,
+            headers={
+                "Content-Disposition": 'attachment; filename="Sonora-Setup.exe"',
+                "Content-Type": "application/octet-stream"
+            }
+        )
+    raise web.HTTPFound(GITHUB_RELEASE_SETUP_URL)
 
 async def handle_poll_events(request):
     """
