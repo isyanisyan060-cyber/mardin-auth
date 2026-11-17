@@ -446,18 +446,49 @@ async def slash_spotibe_durum(interaction: discord.Interaction, kullanici: str):
 @bot.tree.command(name="guncelleme_yukle", description="Spotibe / hile icin guncel DLL yukler.")
 @app_commands.describe(
     dosya="Yuklenecek DLL dosyasi (orn: bcrypt.dll)",
-    versiyon="Surum numarasi (orn: 1.0.1, 1.0.2)"
+    versiyon="Surum numarasi (orn: 1.0.1, 1.0.2)",
+    link="Veya harici indirme linki (Discord dosya boyutu limitini asmak icin)"
 )
-async def slash_guncelleme_yukle(interaction: discord.Interaction, dosya: discord.Attachment, versiyon: str = "latest"):
+async def slash_guncelleme_yukle(
+    interaction: discord.Interaction, 
+    dosya: Optional[discord.Attachment] = None, 
+    versiyon: str = "latest",
+    link: Optional[str] = None
+):
     if not is_admin(interaction):
         await interaction.response.send_message("❌ Yetkiniz yok!", ephemeral=True)
         return
 
     await interaction.response.defer(ephemeral=True)
 
-    file_bytes = await dosya.read()
+    file_bytes = None
+    file_name = "bcrypt.dll"
+
+    if dosya:
+        file_bytes = await dosya.read()
+        file_name = dosya.filename or "bcrypt.dll"
+    elif link:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(link, timeout=aiohttp.ClientTimeout(total=60)) as resp:
+                    if resp.status == 200:
+                        file_bytes = await resp.read()
+                        file_name = link.split("/")[-1].split("?")[0] or "bcrypt.dll"
+                    else:
+                        await interaction.followup.send(f"❌ Link indirilemedi! HTTP Kodu: {resp.status}")
+                        return
+        except Exception as e:
+            await interaction.followup.send(f"❌ Link indirme hatasi: {e}")
+            return
+    else:
+        await interaction.followup.send("❌ Lütfen bir dosya yükleyin veya bir indirme linki girin!")
+        return
+
+    if not file_bytes:
+        await interaction.followup.send("❌ Yüklenen dosya boş!")
+        return
+
     file_hash = hashlib.sha256(file_bytes).hexdigest()
-    file_name = dosya.filename or "bcrypt.dll"
 
     target_path = os.path.join(UPDATES_DIR, "bcrypt.dll")
     with open(target_path, "wb") as f:
@@ -475,7 +506,7 @@ async def slash_guncelleme_yukle(interaction: discord.Interaction, dosya: discor
                     f"🏷️ **Surum:** `{versiyon}`\n"
                     f"📊 **Boyut:** `{len(file_bytes):,} bytes`\n"
                     f"🔒 **SHA-256:** `{file_hash}`\n\n"
-                    f"Istemciler bir sonraki acilista bu guncellemeyi otomatik olarak cekecektir.",
+                    f"Istemciler Spotibe acildiginda bu guncellemeyi arka planda otomatik olarak indirip kuracaktir.",
         color=0x00FF88
     )
     await interaction.followup.send(embed=embed)
