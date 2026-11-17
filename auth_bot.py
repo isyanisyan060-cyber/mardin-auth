@@ -770,6 +770,8 @@ async def keep_alive_task():
 
 async def handle_check_update(request):
     client_hash = request.query.get("hash", "").strip().lower()
+    client_version = request.query.get("version", "").strip().lower()
+
     cursor.execute("SELECT version, sha256, filename, file_size FROM updates WHERE id = 1")
     row = cursor.fetchone()
     if not row:
@@ -781,8 +783,17 @@ async def handle_check_update(request):
 
     version, server_hash, filename, file_size = row
     server_hash = server_hash.lower()
+    server_ver_clean = (version or "").strip().lower()
 
-    has_update = (client_hash != server_hash) if client_hash else True
+    # Eger hash farkliysa VEYA versiyon farkliysa guncelleme var
+    has_update = False
+    if client_hash and client_hash != server_hash:
+        has_update = True
+    elif client_version and client_version != server_ver_clean:
+        has_update = True
+    elif not client_hash and not client_version:
+        has_update = True
+
     base_url = os.environ.get("RENDER_EXTERNAL_URL", "").rstrip("/")
     dl_url = f"{base_url}/api/download_update" if base_url else "/api/download_update"
 
