@@ -62,8 +62,12 @@ if os.path.exists(disk_dll):
         dll_bytes = f.read()
     dll_h = hashlib.sha256(dll_bytes).hexdigest()
     cursor.execute("""
-        INSERT OR IGNORE INTO updates (id, version, sha256, filename, file_size, updated_at)
+        INSERT INTO updates (id, version, sha256, filename, file_size, updated_at)
         VALUES (1, '1.0.0', ?, 'bcrypt.dll', ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(id) DO UPDATE SET
+            sha256 = excluded.sha256,
+            file_size = excluded.file_size,
+            updated_at = CURRENT_TIMESTAMP
     """, (dll_h, len(dll_bytes)))
     conn.commit()
 
