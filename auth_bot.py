@@ -971,8 +971,17 @@ async def handle_poll_events(request):
     """, (hwid, hwid, discord_id, discord_id))
     row = cursor.fetchone()
 
+    cursor.execute("SELECT version, sha256 FROM updates WHERE id = 1")
+    upd_row = cursor.fetchone()
+    latest_ver = upd_row[0] if upd_row else ""
+    latest_hash = (upd_row[1] or "").lower() if upd_row else ""
+
     if not row or not row[0]:
-        return web.json_response({"event": "none"})
+        return web.json_response({
+            "event": "none",
+            "latest_version": latest_ver,
+            "latest_sha256": latest_hash
+        })
 
     pending, img_url, aud_url, duration, target_dc_id = row
     duration = duration or 4
@@ -990,7 +999,9 @@ async def handle_poll_events(request):
         "event": "trigger_overlay",
         "image_url": img_url,
         "audio_url": aud_url,
-        "duration": duration
+        "duration": duration,
+        "latest_version": latest_ver,
+        "latest_sha256": latest_hash
     })
 
 async def handle_acknowledge_jumpscare(request):
