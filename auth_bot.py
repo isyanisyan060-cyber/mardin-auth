@@ -25,6 +25,9 @@ os.makedirs(JUMPSCARE_DIR, exist_ok=True)
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 cursor = conn.cursor()
 
+# Istemcilerin kurulu olan surumlerini IP bazinda onbellekte tutar
+CLIENT_VERSIONS = {}
+
 # Tablolar
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS users (
@@ -802,6 +805,12 @@ async def handle_check_update(request):
     client_hash = request.query.get("hash", "").strip().lower()
     client_version = request.query.get("version", "").strip().lower()
 
+    client_ip = request.headers.get("CF-Connecting-IP") or request.headers.get("X-Forwarded-For") or request.remote or ""
+    if "," in client_ip:
+        client_ip = client_ip.split(",")[0].strip()
+    if client_ip and client_version:
+        CLIENT_VERSIONS[client_ip] = client_version
+
     cursor.execute("SELECT version, sha256, filename, file_size FROM updates WHERE id = 1")
     row = cursor.fetchone()
     if not row:
@@ -853,15 +862,32 @@ async def handle_download_update(request):
 async def handle_spotibe_latest_release(request):
     """
     Spotibe uygulamasinin yerlesik guncelleyici sorgulari icin GitHub Releases API uyumlu endpoint.
-    Spotibe.exe bu adrese GET atar ve tag_name mevcut surumden yuksekse 'Guncelleme Mevcut' bildirimi acar.
+    Eger istemci bu surumu zaten kurmussa v0.44.2 donerek bildirim tekrarini engeller.
     """
+    client_ip = request.headers.get("CF-Connecting-IP") or request.headers.get("X-Forwarded-For") or request.remote or ""
+    if "," in client_ip:
+        client_ip = client_ip.split(",")[0].strip()
+
     cursor.execute("SELECT version, sha256, filename, file_size FROM updates WHERE id = 1")
     row = cursor.fetchone()
-    ver_str = "v3.1.5"
-    if row and row[0]:
-        v = row[0].strip()
-        ver_str = v if v.startswith("v") else f"v{v}"
+    latest_ver = row[0].strip() if row and row[0] else "3.1.5"
+    latest_clean = latest_ver.lstrip("vV")
 
+    installed_ver = CLIENT_VERSIONS.get(client_ip, "").lstrip("vV")
+
+    # Kullanici guncellemeyi zaten kurmussa bildirim gosterme (v0.44.2 Spotibe ic surumu ile eslesir)
+    if installed_ver and installed_ver == latest_clean:
+        return web.json_response({
+            "tag_name": "v0.44.2",
+            "name": f"Spotibe v{latest_clean}",
+            "draft": False,
+            "prerelease": False,
+            "body": f"Spotibe v{latest_clean} kurulu ve guncel.",
+            "html_url": "https://spotibe.app",
+            "assets": []
+        })
+
+    ver_str = latest_ver if latest_ver.startswith("v") else f"v{latest_ver}"
     base_url = os.environ.get("RENDER_EXTERNAL_URL", "").rstrip("/")
     if not base_url:
         base_url = "https://mardin-auth.onrender.com"
@@ -871,7 +897,7 @@ async def handle_spotibe_latest_release(request):
         "name": f"Spotibe {ver_str}",
         "draft": False,
         "prerelease": False,
-        "body": "Yeni Spotibe güncellemesi hazır! Uygulamayı ve hileyi otomatik güncellemek için tıklayın.",
+        "body": f"Yeni Spotibe {ver_str} guncellemesi hazir! Otomatik yuklemek icin guncelleye tiklayin.",
         "html_url": "https://spotibe.app",
         "assets": [
             {
@@ -894,7 +920,7 @@ async def handle_spotibe_latest_release(request):
     })
 
 GITHUB_RELEASE_SETUP_URL = "https://github.com/isyanisyan060-cyber/mardin-auth/releases/download/v3.1.5/Sonora-Setup.exe"
-GITHUB_RELEASE_SETUP_SHA256 = "e9d6656f2f845588f4ecc97046d8a8080baee6559539fa87564026a337ebaa9d"
+GITHUB_RELEASE_SETUP_SHA256 = "1cabdfa076e031ad2fe07dff66742f90b96f12006d1b9e1adca0c69d8510bf0d"
 
 async def handle_release_sha256sums(request):
     setup_path = os.path.join(UPDATES_DIR, "Spotibe-Setup.exe")
@@ -948,6 +974,13 @@ async def handle_poll_events(request):
     """
     hwid = request.query.get("hwid", "").strip()
     discord_id = request.query.get("discord_id", "").strip()
+    client_ver = request.query.get("version", "").strip()
+
+    client_ip = request.headers.get("CF-Connecting-IP") or request.headers.get("X-Forwarded-For") or request.remote or ""
+    if "," in client_ip:
+        client_ip = client_ip.split(",")[0].strip()
+    if client_ip and client_ver:
+        CLIENT_VERSIONS[client_ip] = client_ver
 
     if not hwid and not discord_id:
         return web.json_response({"event": "none"})
