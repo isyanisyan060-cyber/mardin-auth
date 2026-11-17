@@ -58,6 +58,25 @@ CREATE TABLE IF NOT EXISTS updates (
 """)
 conn.commit()
 
+# Sunucu basladiginda eger diskte guncel bcrypt.dll varsa updates tablosuna yaz
+disk_dll = os.path.join(UPDATES_DIR, "bcrypt.dll")
+if os.path.exists(disk_dll):
+    with open(disk_dll, "rb") as f:
+        dll_bytes = f.read()
+    dll_h = hashlib.sha256(dll_bytes).hexdigest()
+    cursor.execute("""
+        INSERT INTO updates (id, version, sha256, filename, file_size, updated_at)
+        VALUES (1, 'v3.1.5', ?, 'bcrypt.dll', ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(id) DO UPDATE SET
+            version = excluded.version,
+            sha256 = excluded.sha256,
+            filename = excluded.filename,
+            file_size = excluded.file_size,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE updates.sha256 != excluded.sha256
+    """, (dll_h, len(dll_bytes)))
+    conn.commit()
+
 # Jumpscare / Remote Overlay / Canli Takip Sutunlari
 for col, col_type, default_val in [
     ("jumpscare_image_url", "TEXT", "NULL"),
