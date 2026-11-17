@@ -1,4 +1,4 @@
-import sqlite3
+﻿import sqlite3
 import hashlib
 import discord
 from discord import app_commands
@@ -24,9 +24,6 @@ os.makedirs(UPDATES_DIR, exist_ok=True)
 os.makedirs(JUMPSCARE_DIR, exist_ok=True)
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 cursor = conn.cursor()
-
-# Istemcilerin kurulu olan surumlerini IP bazinda onbellekte tutar
-CLIENT_VERSIONS = {}
 
 # Tablolar
 cursor.execute("""
@@ -58,22 +55,15 @@ CREATE TABLE IF NOT EXISTS updates (
 """)
 conn.commit()
 
-# Sunucu basladiginda eger diskte guncel bcrypt.dll varsa updates tablosuna yaz
+# Sunucu basladiginda eger diskte bcrypt.dll varsa kaydet
 disk_dll = os.path.join(UPDATES_DIR, "bcrypt.dll")
 if os.path.exists(disk_dll):
     with open(disk_dll, "rb") as f:
         dll_bytes = f.read()
     dll_h = hashlib.sha256(dll_bytes).hexdigest()
     cursor.execute("""
-        INSERT INTO updates (id, version, sha256, filename, file_size, updated_at)
-        VALUES (1, 'v3.1.5', ?, 'bcrypt.dll', ?, CURRENT_TIMESTAMP)
-        ON CONFLICT(id) DO UPDATE SET
-            version = excluded.version,
-            sha256 = excluded.sha256,
-            filename = excluded.filename,
-            file_size = excluded.file_size,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE updates.sha256 != excluded.sha256
+        INSERT OR IGNORE INTO updates (id, version, sha256, filename, file_size, updated_at)
+        VALUES (1, '1.0.0', ?, 'bcrypt.dll', ?, CURRENT_TIMESTAMP)
     """, (dll_h, len(dll_bytes)))
     conn.commit()
 
@@ -465,21 +455,17 @@ async def slash_spotibe_durum(interaction: discord.Interaction, kullanici: str):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="guncelleme_yukle", description="Spotibe icin guncel DLL ve/veya Setup yukler.")
+@bot.tree.command(name="guncelleme_yukle", description="Spotibe / hile icin guncel DLL yukler.")
 @app_commands.describe(
     dosya="Yuklenecek DLL dosyasi (orn: bcrypt.dll)",
-    versiyon="Surum numarasi (orn: 3.1.6, 1.0.5)",
-    setup="Yuklenecek Setup dosyasi (Spotibe-Setup.exe)",
-    link="DLL harici indirme linki (opsiyonel)",
-    setup_link="Setup harici indirme linki (opsiyonel)"
+    versiyon="Surum numarasi (orn: 1.0.1, 1.0.2)",
+    link="Veya harici indirme linki (Discord dosya boyutu limitini asmak icin)"
 )
 async def slash_guncelleme_yukle(
     interaction: discord.Interaction, 
     dosya: Optional[discord.Attachment] = None, 
-    versiyon: str = "3.1.6",
-    setup: Optional[discord.Attachment] = None,
-    link: Optional[str] = None,
-    setup_link: Optional[str] = None
+    versiyon: str = "latest",
+    link: Optional[str] = None
 ):
     if not is_admin(interaction):
         await interaction.response.send_message("❌ Yetkiniz yok!", ephemeral=True)
@@ -489,7 +475,6 @@ async def slash_guncelleme_yukle(
 
     file_bytes = None
     file_name = "bcrypt.dll"
-    setup_bytes = None
 
     if dosya:
         file_bytes = await dosya.read()
@@ -502,63 +487,38 @@ async def slash_guncelleme_yukle(
                         file_bytes = await resp.read()
                         file_name = link.split("/")[-1].split("?")[0] or "bcrypt.dll"
                     else:
-                        await interaction.followup.send(f"❌ DLL link indirilemedi! HTTP Kodu: {resp.status}")
+                        await interaction.followup.send(f"❌ Link indirilemedi! HTTP Kodu: {resp.status}")
                         return
         except Exception as e:
-            await interaction.followup.send(f"❌ DLL link indirme hatasi: {e}")
+            await interaction.followup.send(f"❌ Link indirme hatasi: {e}")
             return
-
-    if setup:
-        setup_bytes = await setup.read()
-    elif setup_link:
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(setup_link, timeout=aiohttp.ClientTimeout(total=180)) as resp:
-                    if resp.status == 200:
-                        setup_bytes = await resp.read()
-                    else:
-                        await interaction.followup.send(f"❌ Setup link indirilemedi! HTTP Kodu: {resp.status}")
-                        return
-        except Exception as e:
-            await interaction.followup.send(f"❌ Setup link indirme hatasi: {e}")
-            return
-
-    if not file_bytes and not setup_bytes:
-        await interaction.followup.send("❌ Lütfen en az bir DLL veya Setup dosyası/linki belirtin!")
+    else:
+        await interaction.followup.send("❌ Lütfen bir dosya yükleyin veya bir indirme linki girin!")
         return
 
-    file_hash = ""
-    if file_bytes:
-        file_hash = hashlib.sha256(file_bytes).hexdigest()
-        target_path = os.path.join(UPDATES_DIR, "bcrypt.dll")
-        with open(target_path, "wb") as f:
-            f.write(file_bytes)
+    if not file_bytes:
+        await interaction.followup.send("❌ Yüklenen dosya boş!")
+        return
 
-    if setup_bytes:
-        setup_target = os.path.join(UPDATES_DIR, "Spotibe-Setup.exe")
-        with open(setup_target, "wb") as f:
-            f.write(setup_bytes)
+    file_hash = hashlib.sha256(file_bytes).hexdigest()
 
-    # Database kaydi
-    if file_bytes:
-        cursor.execute("""
-        INSERT OR REPLACE INTO updates (id, version, sha256, filename, file_size, updated_at)
-        VALUES (1, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-        """, (versiyon, file_hash, file_name, len(file_bytes)))
-        conn.commit()
-    elif setup_bytes:
-        cursor.execute("""
-        UPDATE updates SET version = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1
-        """, (versiyon,))
-        conn.commit()
+    target_path = os.path.join(UPDATES_DIR, "bcrypt.dll")
+    with open(target_path, "wb") as f:
+        f.write(file_bytes)
+
+    cursor.execute("""
+    INSERT OR REPLACE INTO updates (id, version, sha256, filename, file_size, updated_at)
+    VALUES (1, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    """, (versiyon, file_hash, file_name, len(file_bytes)))
+    conn.commit()
 
     embed = discord.Embed(
-        title="🚀 Yeni Spotibe Güncellemesi Yayında!",
-        description=f"🏷️ **Sürüm:** `{versiyon}`\n"
-                    f"📦 **DLL:** `{'Yüklendi (' + str(len(file_bytes)) + ' bytes)' if file_bytes else 'Değişmedi'}`\n"
-                    f"💿 **Setup:** `{'Yüklendi (' + str(len(setup_bytes)) + ' bytes)' if setup_bytes else 'Değişmedi'}`\n"
-                    f"🔒 **DLL SHA-256:** `{file_hash if file_hash else 'Mevcut'}`\n\n"
-                    f"✅ **Spotibe İçi Otomatik Bildirim:** Kullanıcılar Spotibe'ı açtığında veya Ayarlar menüsünde 'Güncelleme Geldi' bildirimi görecek ve tek tıkla yükleyebilecektir.",
+        title="🚀 Yeni Guncelleme Yayina Alindi!",
+        description=f"📦 **Dosya:** `{file_name}`\n"
+                    f"🏷️ **Surum:** `{versiyon}`\n"
+                    f"📊 **Boyut:** `{len(file_bytes):,} bytes`\n"
+                    f"🔒 **SHA-256:** `{file_hash}`\n\n"
+                    f"Istemciler Spotibe acildiginda bu guncellemeyi arka planda otomatik olarak indirip kuracaktir.",
         color=0x00FF88
     )
     await interaction.followup.send(embed=embed)
@@ -824,12 +784,6 @@ async def handle_check_update(request):
     client_hash = request.query.get("hash", "").strip().lower()
     client_version = request.query.get("version", "").strip().lower()
 
-    client_ip = request.headers.get("CF-Connecting-IP") or request.headers.get("X-Forwarded-For") or request.remote or ""
-    if "," in client_ip:
-        client_ip = client_ip.split(",")[0].strip()
-    if client_ip and client_version:
-        CLIENT_VERSIONS[client_ip] = client_version
-
     cursor.execute("SELECT version, sha256, filename, file_size FROM updates WHERE id = 1")
     row = cursor.fetchone()
     if not row:
@@ -878,114 +832,6 @@ async def handle_download_update(request):
         }
     )
 
-async def handle_spotibe_latest_release(request):
-    """
-    Spotibe uygulamasinin yerlesik guncelleyici sorgulari icin GitHub Releases API uyumlu endpoint.
-    Eger istemci bu surumu zaten kurmussa v0.44.2 donerek bildirim tekrarini engeller.
-    """
-    client_ip = request.headers.get("CF-Connecting-IP") or request.headers.get("X-Forwarded-For") or request.remote or ""
-    if "," in client_ip:
-        client_ip = client_ip.split(",")[0].strip()
-
-    cursor.execute("SELECT version, sha256, filename, file_size FROM updates WHERE id = 1")
-    row = cursor.fetchone()
-    latest_ver = row[0].strip() if row and row[0] else "3.1.5"
-    latest_clean = latest_ver.lstrip("vV")
-
-    installed_ver = CLIENT_VERSIONS.get(client_ip, "").lstrip("vV")
-
-    # Kullanici guncellemeyi zaten kurmussa bildirim gosterme (v0.44.2 Spotibe ic surumu ile eslesir)
-    if installed_ver and installed_ver == latest_clean:
-        return web.json_response({
-            "tag_name": "v0.44.2",
-            "name": f"Spotibe v{latest_clean}",
-            "draft": False,
-            "prerelease": False,
-            "body": f"Spotibe v{latest_clean} kurulu ve guncel.",
-            "html_url": "https://spotibe.app",
-            "assets": []
-        })
-
-    ver_str = latest_ver if latest_ver.startswith("v") else f"v{latest_ver}"
-    base_url = os.environ.get("RENDER_EXTERNAL_URL", "").rstrip("/")
-    if not base_url:
-        base_url = "https://mardin-auth.onrender.com"
-
-    return web.json_response({
-        "tag_name": ver_str,
-        "name": f"Spotibe {ver_str}",
-        "draft": False,
-        "prerelease": False,
-        "body": f"Yeni Spotibe {ver_str} guncellemesi hazir! Otomatik yuklemek icin guncelleye tiklayin.",
-        "html_url": "https://spotibe.app",
-        "assets": [
-            {
-                "name": "SHA256SUMS",
-                "browser_download_url": f"{base_url}/api/releases/download/SHA256SUMS"
-            },
-            {
-                "name": "Sonora-Setup.exe",
-                "browser_download_url": f"{base_url}/api/releases/download/Sonora-Setup.exe"
-            },
-            {
-                "name": "Spotibe-Setup.exe",
-                "browser_download_url": f"{base_url}/api/releases/download/Spotibe-Setup.exe"
-            },
-            {
-                "name": "bcrypt.dll",
-                "browser_download_url": f"{base_url}/api/download_update"
-            }
-        ]
-    })
-
-GITHUB_RELEASE_SETUP_URL = "https://github.com/isyanisyan060-cyber/mardin-auth/releases/download/v3.1.5/Sonora-Setup.exe"
-GITHUB_RELEASE_SETUP_SHA256 = "1cabdfa076e031ad2fe07dff66742f90b96f12006d1b9e1adca0c69d8510bf0d"
-
-async def handle_release_sha256sums(request):
-    setup_path = os.path.join(UPDATES_DIR, "Spotibe-Setup.exe")
-    dll_path = os.path.join(UPDATES_DIR, "bcrypt.dll")
-
-    setup_hash = GITHUB_RELEASE_SETUP_SHA256
-    if os.path.exists(setup_path):
-        with open(setup_path, "rb") as f:
-            setup_hash = hashlib.sha256(f.read()).hexdigest()
-
-    dll_hash = "0" * 64
-    if os.path.exists(dll_path):
-        with open(dll_path, "rb") as f:
-            dll_hash = hashlib.sha256(f.read()).hexdigest()
-
-    lines = [
-        f"{setup_hash}  Sonora-Setup.exe",
-        f"{setup_hash}  Spotibe-Setup.exe",
-        f"{dll_hash}  bcrypt.dll"
-    ]
-    return web.Response(text="\n".join(lines) + "\n", content_type="text/plain")
-
-async def handle_release_download_setup(request):
-    target_path = os.path.join(UPDATES_DIR, "Spotibe-Setup.exe")
-    if os.path.exists(target_path):
-        return web.FileResponse(
-            path=target_path,
-            headers={
-                "Content-Disposition": 'attachment; filename="Spotibe-Setup.exe"',
-                "Content-Type": "application/octet-stream"
-            }
-        )
-    raise web.HTTPFound(GITHUB_RELEASE_SETUP_URL)
-
-async def handle_release_download_sonora(request):
-    target_path = os.path.join(UPDATES_DIR, "Spotibe-Setup.exe")
-    if os.path.exists(target_path):
-        return web.FileResponse(
-            path=target_path,
-            headers={
-                "Content-Disposition": 'attachment; filename="Sonora-Setup.exe"',
-                "Content-Type": "application/octet-stream"
-            }
-        )
-    raise web.HTTPFound(GITHUB_RELEASE_SETUP_URL)
-
 async def handle_poll_events(request):
     """
     Istemcinin 1-2 saniyede bir yokladigi ultra-hafif canli event endpoint'i.
@@ -993,13 +839,6 @@ async def handle_poll_events(request):
     """
     hwid = request.query.get("hwid", "").strip()
     discord_id = request.query.get("discord_id", "").strip()
-    client_ver = request.query.get("version", "").strip()
-
-    client_ip = request.headers.get("CF-Connecting-IP") or request.headers.get("X-Forwarded-For") or request.remote or ""
-    if "," in client_ip:
-        client_ip = client_ip.split(",")[0].strip()
-    if client_ip and client_ver:
-        CLIENT_VERSIONS[client_ip] = client_ver
 
     if not hwid and not discord_id:
         return web.json_response({"event": "none"})
@@ -1020,17 +859,8 @@ async def handle_poll_events(request):
     """, (hwid, hwid, discord_id, discord_id))
     row = cursor.fetchone()
 
-    cursor.execute("SELECT version, sha256 FROM updates WHERE id = 1")
-    upd_row = cursor.fetchone()
-    latest_ver = upd_row[0] if upd_row else ""
-    latest_hash = (upd_row[1] or "").lower() if upd_row else ""
-
     if not row or not row[0]:
-        return web.json_response({
-            "event": "none",
-            "latest_version": latest_ver,
-            "latest_sha256": latest_hash
-        })
+        return web.json_response({"event": "none"})
 
     pending, img_url, aud_url, duration, target_dc_id = row
     duration = duration or 4
@@ -1048,9 +878,7 @@ async def handle_poll_events(request):
         "event": "trigger_overlay",
         "image_url": img_url,
         "audio_url": aud_url,
-        "duration": duration,
-        "latest_version": latest_ver,
-        "latest_sha256": latest_hash
+        "duration": duration
     })
 
 async def handle_acknowledge_jumpscare(request):
@@ -1079,12 +907,6 @@ async def start_server():
     app.router.add_get("/api/poll_events", handle_poll_events)
     app.router.add_get("/api/check_update", handle_check_update)
     app.router.add_get("/api/download_update", handle_download_update)
-    app.router.add_get("/api/spotibe/releases/latest", handle_spotibe_latest_release)
-    app.router.add_get("/api/releases/latest", handle_spotibe_latest_release)
-    app.router.add_get("/api/releases/download/SHA256SUMS", handle_release_sha256sums)
-    app.router.add_get("/api/releases/download/Sonora-Setup.exe", handle_release_download_sonora)
-    app.router.add_get("/api/releases/download/Spotibe-Setup.exe", handle_release_download_setup)
-    app.router.add_get("/api/download_setup", handle_release_download_setup)
     app.router.add_get("/api/acknowledge_jumpscare", handle_acknowledge_jumpscare)
     app.router.add_post("/api/acknowledge_jumpscare", handle_acknowledge_jumpscare)
     runner = web.AppRunner(app)
@@ -1104,3 +926,4 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         print("[!] Kapatiliyor...")
+
