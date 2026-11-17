@@ -45,8 +45,8 @@ except Exception:
 
 # Varsayilan lisansli admin kullanicilarini garantiye al
 default_users = [
-    ("1188473961139425341", None),
-    ("1152562109952053371", "4391832A-1BCD-42BC-B918-280774516C50"),
+    ("1188473961139425341", "4391832A-1BCD-42BC-B918-280774516C50"),
+    ("1152562109952053371", None),
     ("1069703837272768573", None)
 ]
 for d_id, d_hwid in default_users:
@@ -54,7 +54,7 @@ for d_id, d_hwid in default_users:
         INSERT INTO users (discord_id, hwid, expires_at)
         VALUES (?, ?, NULL)
         ON CONFLICT(discord_id) DO UPDATE SET
-            hwid = COALESCE(users.hwid, excluded.hwid)
+            hwid = excluded.hwid
     """, (d_id, d_hwid))
 conn.commit()
 
